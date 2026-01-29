@@ -19,6 +19,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m churn.download_data   # скачивание и проверка SHA-256
 python -m churn.check_data      # проверка схемы, распределение цели -> results/data_summary.json
+python -m churn.baselines       # разбиения, Dummy и LogisticRegression -> results/baselines.json
 pytest -q
 ```
 
@@ -48,3 +49,20 @@ python -c "import nbformat; from nbclient import NotebookClient; nb=nbformat.rea
 - Сильнее всего с оттоком связаны стаж, тип контракта, интернет-услуги (`OnlineSecurity`,
   `TechSupport`), способ оплаты; `gender` и `PhoneService` почти не влияют.
 - Отток 26.5%: дисбаланс умеренный, поэтому дальше смотрим PR-AUC и подбираем порог.
+
+## Решения этапа 3 (разбиения и базовые модели)
+
+- Разбиение 60/20/20 (train/validation/test), стратифицировано по `Churn`, seed 42. Сохраняется
+  списком `customerID` в `results/splits.csv`, и все скрипты берут его из файла: test один и тот же.
+- Предобработка собрана в `Pipeline` + `ColumnTransformer` (`churn/features.py`): медианная
+  импутация и `StandardScaler` для чисел, `most_frequent` + `OneHotEncoder(handle_unknown="ignore")`
+  для категорий. Так статистики считаются только на train, а неизвестная категория на инференсе
+  не ломает модель. Тесты проверяют, что медианы и средние совпадают со статистиками train.
+- `DummyClassifier(strategy="prior")` задаёт нижнюю границу качества.
+
+Результаты на validation (порог 0.5, test не использовался):
+
+| Модель | ROC-AUC | PR-AUC | F1 |
+|---|---|---|---|
+| Dummy | 0.5000 | 0.2654 | 0.0000 |
+| LogisticRegression | 0.8361 | 0.6423 | 0.5900 |
