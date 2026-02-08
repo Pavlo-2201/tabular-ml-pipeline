@@ -19,7 +19,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python -m churn.download_data   # скачивание и проверка SHA-256
 python -m churn.check_data      # проверка схемы, распределение цели -> results/data_summary.json
-python -m churn.baselines       # разбиения, Dummy и LogisticRegression -> results/baselines.json
+python -m churn.compare_models --ablation   # все модели на validation -> results/val_comparison.json
 pytest -q
 ```
 
@@ -66,3 +66,30 @@ python -c "import nbformat; from nbclient import NotebookClient; nb=nbformat.rea
 |---|---|---|---|
 | Dummy | 0.5000 | 0.2654 | 0.0000 |
 | LogisticRegression | 0.8361 | 0.6423 | 0.5900 |
+
+## Решения этапа 4 (RandomForest и CatBoost)
+
+- Каждая модель получает свою предобработку (`churn/models.py`):
+  - LogisticRegression: one-hot + масштабирование;
+  - RandomForest: медианная импутация и `OrdinalEncoder` без масштабирования (деревьям оно не нужно,
+    а one-hot дробит категорию на много слабых бинарных признаков);
+  - CatBoost: категории передаются строками через `cat_features`, кодирование делает сам CatBoost
+    (ordered target statistics); пропуск категории становится отдельным значением.
+- `--ablation` добавляет деревья с one-hot предобработкой, чтобы проверить это решение данными.
+
+Результаты на validation (порог 0.5, фиксированные параметры, test не использовался):
+
+| Модель | ROC-AUC | PR-AUC | F1 |
+|---|---|---|---|
+| Dummy | 0.5000 | 0.2654 | 0.0000 |
+| LogisticRegression | 0.8361 | 0.6423 | 0.5900 |
+| RandomForest (ordinal) | 0.8347 | 0.6384 | 0.5335 |
+| CatBoost (native cat) | 0.8329 | 0.6401 | 0.5590 |
+| RandomForest (one-hot) | 0.8349 | 0.6300 | 0.5500 |
+| CatBoost (one-hot) | 0.8273 | 0.6322 | 0.5364 |
+
+Нативная обработка категорий в CatBoost немного лучше one-hot по обеим AUC; для леса
+разница в пределах шума. Все модели близки к логистической регрессии: на validation из
+1409 клиентов разница в сотые доли AUC не значима, поэтому сравнение переносится на
+кросс-валидацию (этап 5). F1 при пороге 0.5 занижен из-за дисбаланса, порог подбирается
+на этапе 6.
