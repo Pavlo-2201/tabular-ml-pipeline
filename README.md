@@ -20,6 +20,7 @@ pip install -r requirements.txt
 python -m churn.download_data   # скачивание и проверка SHA-256
 python -m churn.check_data      # проверка схемы, распределение цели -> results/data_summary.json
 python -m churn.compare_models --ablation   # все модели на validation -> results/val_comparison.json
+python -m churn.run_cv          # 5-fold CV и подбор параметров -> results/cv_search.json, cv_candidates.csv (~3.5 мин на 4 CPU)
 pytest -q
 ```
 
@@ -93,3 +94,29 @@ python -c "import nbformat; from nbclient import NotebookClient; nb=nbformat.rea
 1409 клиентов разница в сотые доли AUC не значима, поэтому сравнение переносится на
 кросс-валидацию (этап 5). F1 при пороге 0.5 занижен из-за дисбаланса, порог подбирается
 на этапе 6.
+
+## Решения этапа 5 (кросс-валидация и подбор параметров)
+
+- Одна validation-выборка из 1409 клиентов шумная, поэтому модели сравниваются 5-fold
+  `StratifiedKFold` на development-наборе (train + validation = 5634 клиента). Test не используется.
+- В `GridSearchCV` передаётся весь `Pipeline`, поэтому импутация, кодирование и масштабирование
+  обучаются заново внутри каждого fold. Тест сверяет статистики scaler в каждом fold
+  с обучающей частью именно этого fold.
+- Сетки ограничены (8–18 комбинаций на модель, `churn/tuning.py`). Метрика выбора: средний
+  PR-AUC, потому что положительный класс редкий и важна точность среди отобранных клиентов.
+- CatBoost пришлось обернуть в небольшой sklearn-совместимый класс `CatBoostCatClassifier`:
+  `CatBoostClassifier` копирует `cat_features`, и `sklearn.clone` отказывается его клонировать.
+
+Результаты 5-fold CV (среднее ± стандартное отклонение по fold):
+
+| Модель | Лучшие параметры | PR-AUC | ROC-AUC |
+|---|---|---|---|
+| Dummy | – | 0.2654 ± 0.0001 | 0.5000 ± 0.0000 |
+| LogisticRegression | C=1.0, class_weight=None | 0.6612 ± 0.0176 | 0.8459 ± 0.0083 |
+| RandomForest | max_depth=8, min_samples_leaf=5, max_features=sqrt, 300 деревьев | 0.6670 ± 0.0214 | 0.8470 ± 0.0095 |
+| CatBoost | depth=4, learning_rate=0.03, l2_leaf_reg=10, 500 итераций | 0.6738 ± 0.0236 | 0.8502 ± 0.0089 |
+
+CatBoost лучший по среднему, но отрыв (0.007–0.013 PR-AUC) меньше разброса между fold. На тех же
+fold он лучше логистической регрессии во всех пяти и лучше леса в четырёх из пяти, так что
+преимущество устойчивое, хотя и небольшое. Лучшие параметры CatBoost лежат на краю сетки
+(меньшая глубина, меньший шаг, сильнее регуляризация), то есть сетку можно расширить в эту сторону.
