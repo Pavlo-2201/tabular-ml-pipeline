@@ -22,3 +22,4 @@ artifacts/
 
 # Секреты
 .env
+smoke_run/
